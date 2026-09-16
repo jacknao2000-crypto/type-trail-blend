@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Type Trail DESIGN — Preview</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#111;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;min-height:100vh;font-family:system-ui,sans-serif;color:#aaa}
+h1{font-size:14px;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px;color:#888}
+.wrap{position:relative;width:540px;height:720px;border:1px solid #333;background:#000}
+iframe{border:none;width:1080px;height:1440px;transform-origin:0 0;transform:scale(0.5)}
+.controls{margin-top:16px;display:flex;gap:12px;align-items:center}
+button{background:#222;color:#ccc;border:1px solid #444;padding:6px 16px;cursor:pointer;
+  border-radius:4px;font-size:13px}
+button:hover{background:#333}
+input[type=range]{width:280px;accent-color:#666}
+.time{font-size:12px;font-variant-numeric:tabular-nums;min-width:80px;text-align:center}
+</style>
+</head>
+<body>
+<h1>Type Trail DESIGN — Blend Poster</h1>
+<div class="wrap">
+  <iframe id="comp" src="index.html"></iframe>
+</div>
+<div class="controls">
+  <button id="play">▶ Play</button>
+  <input id="scrub" type="range" min="0" max="1" step="0.001" value="0">
+  <span class="time" id="clock">0.00 / 6.0s</span>
+</div>
+<script>
+const iframe = document.getElementById("comp");
+const playBtn = document.getElementById("play");
+const scrub = document.getElementById("scrub");
+const clock = document.getElementById("clock");
+let tl = null, playing = false, raf = null;
+
+iframe.addEventListener("load", () => {
+  const w = iframe.contentWindow;
+  const check = setInterval(() => {
+    if (w.__timelines && w.__timelines["type-trail-design"]) {
+      tl = w.__timelines["type-trail-design"];
+      clearInterval(check);
+    }
+  }, 50);
+});
+
+playBtn.addEventListener("click", () => {
+  if (!tl) return;
+  if (playing) {
+    playing = false;
+    playBtn.textContent = "▶ Play";
+    cancelAnimationFrame(raf);
+  } else {
+    if (tl.progress() >= 1) tl.progress(0);
+    playing = true;
+    playBtn.textContent = "⏸ Pause";
+    const startTime = performance.now() - tl.time() * 1000;
+    (function tick(now) {
+      if (!playing) return;
+      const elapsed = (now - startTime) / 1000;
+      if (elapsed >= 6) {
+        tl.progress(1);
+        playing = false;
+        playBtn.textContent = "▶ Play";
+        update();
+        return;
+      }
+      tl.time(elapsed);
+      update();
+      raf = requestAnimationFrame(tick);
+    })(performance.now());
+  }
+});
+
+scrub.addEventListener("input", () => {
+  if (!tl) return;
+  playing = false;
+  playBtn.textContent = "▶ Play";
+  cancelAnimationFrame(raf);
+  tl.progress(parseFloat(scrub.value));
+  update();
+});
+
+function update() {
+  if (!tl) return;
+  scrub.value = tl.progress();
+  clock.textContent = tl.time().toFixed(2) + " / 6.0s";
+}
+</script>
+</body>
+</html>
