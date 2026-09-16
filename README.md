@@ -1,5 +1,7 @@
 # Type Trail DESIGN (Illustrator「混合工具」全词动态海报)
 
+[English](./README_EN.md) | [中文](./README.md) · [在线交互体验 (Live Demo)](https://jacknao2000-crypto.github.io/type-trail-blend/preview.html)
+
 本项目根据参考构图，使用 **HyperFrames** 配合矢量轮廓重采样与特征插值算法，完整复现了 Adobe Illustrator 中「混合工具（Blend Tool）」在全词 **「DESIGN」**（**D → E → S → I → G → N**）之间的空间形态演化与致密矢量线束海报效果，并配以四角现代版式排版细节。
 
 ---
