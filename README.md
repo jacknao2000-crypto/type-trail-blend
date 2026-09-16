@@ -64,18 +64,26 @@ This project recreates the iconic **Adobe Illustrator "Blend Tool" ribbon effect
 4. **Topological Counter Collapse**: Letter D is Genus 1 (has an inner hole), whereas E, S, I, G, N are Genus 0 (single boundary). The hole is isolated as an independent sub-path in segment $D \to E$ and linearly scaled down to zero towards its centroid over $t \in [0, 0.90]$, emulating Illustrator's counter interpolation behavior.
 5. **Deterministic Baked DOM + GPU Acceleration**: All 131 contour paths are pre-computed into static SVG paths inside `index.html`. GSAP drives discrete visibility states, ensuring 100% deterministic frame rendering during scrubbing, seeking, and GPU video export.
 
-### Quick Start & Regeneration
+### Quick Start & Regeneration (v1.1)
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/jacknao2000-crypto/type-trail-blend.git
 cd type-trail-blend
 
-# 2. Re-run geometry generation & static poster render
+# 2. Generate the default "DESIGN" flagship poster
 python build_composition.py
 
-# 3. Preview locally
-# Open preview.html directly in any modern browser!
+# 3. (NEW in v1.1) Generate blend posters for ANY custom word:
+python build_composition.py --text "FUTURE"
+python build_composition.py --text "MOTION" --steps 30 --duration 7.0
+python build_composition.py --text "CREATIVE"
+
+# 4. Render high-res MP4 video via HyperFrames CLI:
+npx hyperframes render --quality high --output my_custom_poster.mp4
+
+# 5. Preview locally:
+# Open preview.html directly in any browser!
 ```
 
 ---
@@ -84,6 +92,29 @@ python build_composition.py
 ## 中文说明
 
 本项目根据参考构图，使用 **HyperFrames** 配合矢量轮廓重采样与特征插值算法，完整复现了 Adobe Illustrator 中「混合工具（Blend Tool）」在全词 **「DESIGN」**（**D → E → S → I → G → N**）之间的空间形态演化与致密矢量线束海报效果，并配以四角现代版式排版细节。
+
+在 **v1.1 版本** 中，本工程已进一步升级为**支持任意文字的通用命令行海报生成器**。
+
+### v1.1 核心特性 (v1.1 Highlights)
+
+1. **任意文字支持 (`--text`)**：可输入任意英文单词（如 `FUTURE`、`MOTION`、`CREATIVE`），自动提取字形矢量。
+2. **全自动蛇形排版**：根据单词字数自适应计算对角 Z 字形或蛇形折返坐标，自适应调整字号大小。
+3. **全自动多孔洞拓扑识别**：无论包含 A、B、D、O、P、Q、R 中的哪种带孔字母，算法自动识别内外轮廓，并在过渡过程中平滑收敛与展开，杜绝自交。
+4. **一键生成与预览**：自动更新四角版式小字，输出 1080×1440 高清海报与配套动态网页。
+
+### 命令行快速上手 (v1.1)
+
+```bash
+# 生成默认 DESIGN 旗舰海报
+python build_composition.py
+
+# 生成任意自定义单词（如 FUTURE、MOTION）
+python build_composition.py --text "FUTURE"
+python build_composition.py --text "MOTION" --steps 30 --duration 7.0
+
+# 导出高清 MP4 视频 (需安装 hyperframes)
+npx hyperframes render --quality high --output poster.mp4
+```
 
 ### 交付文件清单
 

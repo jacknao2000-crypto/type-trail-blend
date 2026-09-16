@@ -1,21 +1,25 @@
-"""Build composition for Type Trail DESIGN full-word blend poster.
+"""Type Trail Blend Poster Generator — v1.1.
 
-Extracts glyph outlines from Arial Bold for 'D', 'E', 'S', 'I', 'G', 'N',
-computes 5-segment interpolated wire ribbons (136 total contours) along the
-exact zigzag trajectory from the reference composition, with Swiss-style
-corner metadata and fine graphic lines.
+Generates Illustrator "Blend Tool" dynamic ribbon posters for any arbitrary word,
+featuring:
+  - Sub-pixel TrueType Bézier extraction (Arial Bold)
+  - Automatic serpentine/zigzag anchor layout calculation
+  - Universal multi-hole topological counter detection and morphing
+  - Uniform arc-length resampling (500 pts) with cyclic phase minimization
+  - Swiss international style four-corner hairline typography and registration marks
+  - GSAP cascading time-sequenced reveal baked into SVG/HTML
+  - Full HyperFrames CLI compatibility for GPU hardware-accelerated MP4 export
 
-Generates:
-  - index.html        (HyperFrames composition with GSAP timeline)
-  - preview.html      (standalone browser player with interactive scrubber)
-  - static_poster.png (1080×1440 high-res static poster)
-
-Inputs : fonts/arialbd.ttf
-Outputs: index.html, preview.html, static_poster.png
+Usage:
+  python build_composition.py                   # Default: DESIGN (reference layout)
+  python build_composition.py --text "FUTURE"   # Any arbitrary word
+  python build_composition.py --text "MOTION" --steps 30 --duration 7.0
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import textwrap
 from pathlib import Path
@@ -33,29 +37,18 @@ log = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parent
 FONT_PATH = PROJECT_DIR / "fonts" / "arialbd.ttf"
 W, H = 1080, 1440
-LETTER_H = 165
 FPS = 30
-DURATION = 6.0  # seconds
-STEPS_PER_SEG = 26
 STROKE_WIDTH = 1.0
 STROKE_ALPHA = 0.65
 
-# Exact anchor coordinates derived from reference composition
-ANCHOR_CENTERS: dict[str, np.ndarray] = {
-    "D": np.array([W * 0.627, H * 0.174]),
-    "E": np.array([W * 0.325, H * 0.330]),
-    "S": np.array([W * 0.797, H * 0.400]),
-    "I": np.array([W * 0.329, H * 0.591]),
-    "G": np.array([W * 0.717, H * 0.700]),
-    "N": np.array([W * 0.434, H * 0.856]),
-}
-
-PAIRS: list[tuple[str, str]] = [
-    ("D", "E"),
-    ("E", "S"),
-    ("S", "I"),
-    ("I", "G"),
-    ("G", "N"),
+# Default reference-matched anchor coordinates for "DESIGN"
+REFERENCE_DESIGN_ANCHORS: list[tuple[str, np.ndarray]] = [
+    ("D", np.array([W * 0.627, H * 0.174])),
+    ("E", np.array([W * 0.325, H * 0.330])),
+    ("S", np.array([W * 0.797, H * 0.400])),
+    ("I", np.array([W * 0.329, H * 0.591])),
+    ("G", np.array([W * 0.717, H * 0.700])),
+    ("N", np.array([W * 0.434, H * 0.856])),
 ]
 
 
@@ -150,66 +143,117 @@ def pts_to_svg_d(pts: np.ndarray, precision: int = 2) -> str:
     return "".join(parts)
 
 
+def compute_anchors(text: str) -> list[tuple[str, np.ndarray]]:
+    """Compute serpentine/zigzag anchor coordinates for arbitrary text."""
+    clean_text = text.upper().strip()
+    if clean_text == "DESIGN":
+        return REFERENCE_DESIGN_ANCHORS
+
+    k = len(clean_text)
+    anchors: list[tuple[str, np.ndarray]] = []
+    for i, ch in enumerate(clean_text):
+        ratio = i / max(1, k - 1)
+        y = H * (0.17 + 0.69 * ratio)
+        x = W * 0.68 if i % 2 == 0 else W * 0.32
+        anchors.append((ch, np.array([x, y])))
+    return anchors
+
+
 # ── Pipeline build ───────────────────────────────────────────────────
 
-def build() -> None:
-    """Execute complete generation pipeline."""
+def build(
+    text: str = "DESIGN",
+    steps_per_seg: int = 26,
+    duration: float = 6.0,
+    letter_h: float | None = None,
+) -> None:
+    """Execute complete generation pipeline for *text* (v1.1)."""
+    clean_text = text.upper().strip()
+    if len(clean_text) < 2:
+        raise ValueError("Text must contain at least 2 characters.")
+
+    k = len(clean_text)
+    calc_letter_h = letter_h if letter_h is not None else min(165.0, 950.0 / k)
+
+    log.info("Type Trail Blend Generator v1.1 — rendering text: %s", clean_text)
     font = TTFont(str(FONT_PATH))
-    log.info("Loaded font %s", FONT_PATH.name)
 
-    # 1. Extract raw loops
-    raw_loops = {ch: extract_loops(font, ch) for ch in "DESIGN"}
-    outers_norm = {ch: normalize_and_flip(raw_loops[ch][0]) for ch in "DESIGN"}
-    d_inner_norm = normalize_and_flip(raw_loops["D"][1])
+    # 1. Compute anchor positions and transition pairs
+    anchors = compute_anchors(clean_text)
+    pairs = [(anchors[i][0], anchors[i + 1][0], anchors[i][1], anchors[i + 1][1]) for i in range(k - 1)]
 
-    # 2. Center each glyph around its bounding box centroid
+    # 2. Extract raw loops, outer boundaries, and inner holes for all unique characters
+    unique_chars = sorted(set(clean_text))
+    raw_loops: dict[str, list[np.ndarray]] = {}
+    outers_norm: dict[str, np.ndarray] = {}
+    inners_norm: dict[str, list[np.ndarray]] = {}
+
+    for ch in unique_chars:
+        loops = extract_loops(font, ch)
+        raw_loops[ch] = loops
+        outers_norm[ch] = normalize_and_flip(loops[0])
+        inners_norm[ch] = [normalize_and_flip(loop_pts) for loop_pts in loops[1:]]
+
+    # 3. Center each glyph outline and holes around outer bounding box centroid
     centers: dict[str, np.ndarray] = {}
     centered_outers: dict[str, np.ndarray] = {}
-    for ch in "DESIGN":
+    centered_inners: dict[str, list[np.ndarray]] = {}
+
+    for ch in unique_chars:
         pts = outers_norm[ch]
         min_xy = np.min(pts, axis=0)
         max_xy = np.max(pts, axis=0)
         c = (min_xy + max_xy) / 2
         centers[ch] = c
         centered_outers[ch] = pts - c
+        centered_inners[ch] = [loop_pts - c for loop_pts in inners_norm[ch]]
 
-    d_inner_centered = d_inner_norm - centers["D"]
-
-    # 3. Resample outer loops
+    # 4. Resample outer loops and hole loops
     n_pts = 500
     resampled_outers: dict[str, np.ndarray] = {}
-    for ch in "DESIGN":
-        resampled = resample_closed(centered_outers[ch], n_pts)
-        resampled_outers[ch] = ensure_clockwise(resampled)
+    resampled_inners: dict[str, list[np.ndarray]] = {}
 
-    d_inner_resampled = resample_closed(d_inner_centered, 200)
+    for ch in unique_chars:
+        resampled_outers[ch] = ensure_clockwise(resample_closed(centered_outers[ch], n_pts))
+        resampled_inners[ch] = [
+            ensure_clockwise(resample_closed(loop_pts, 200)) for loop_pts in centered_inners[ch]
+        ]
 
-    # 4. Generate all 136 contour layers across 5 segments
+    # 5. Generate all interpolated contour layers across segments
     contours: list[dict[str, Any]] = []
     layer_id = 0
 
-    for seg_idx, (c1, c2) in enumerate(PAIRS):
+    for seg_idx, (c1, c2, pos1, pos2) in enumerate(pairs):
         poly1 = resampled_outers[c1]
         poly2_aligned = align_loop(poly1, resampled_outers[c2])
-        pos1 = ANCHOR_CENTERS[c1]
-        pos2 = ANCHOR_CENTERS[c2]
 
-        for s in range(STEPS_PER_SEG + 1):
-            # Avoid duplicating endpoint between segments
+        for s in range(steps_per_seg + 1):
             if seg_idx > 0 and s == 0:
                 continue
 
-            t = s / STEPS_PER_SEG
+            t = s / steps_per_seg
             curr_pos = (1 - t) * pos1 + t * pos2
             curr_poly = (1 - t) * poly1 + t * poly2_aligned
-            screen_poly = curr_poly * LETTER_H + curr_pos
+            screen_poly = curr_poly * calc_letter_h + curr_pos
 
-            # D's hole in D -> E segment
-            hole_d_str: str | None = None
-            if c1 == "D" and t < 0.90:
-                scale = max(0.0, 1.0 - t * 1.1)
-                hole_screen = (d_inner_resampled * scale) * LETTER_H + curr_pos
-                hole_d_str = pts_to_svg_d(hole_screen)
+            # Universal hole morphing:
+            # - Holes from departure letter c1 shrink to 0 as t -> 1
+            # - Holes from arrival letter c2 expand from 0 as t -> 1
+            hole_paths: list[str] = []
+
+            if centered_inners[c1] and t < 0.90:
+                scale_out = max(0.0, 1.0 - t * 1.1)
+                for h_loop in resampled_inners[c1]:
+                    h_screen = (h_loop * scale_out) * calc_letter_h + curr_pos
+                    hole_paths.append(pts_to_svg_d(h_screen))
+
+            if centered_inners[c2] and t > 0.10:
+                scale_in = max(0.0, (t - 0.10) / 0.90)
+                for h_loop in resampled_inners[c2]:
+                    h_screen = (h_loop * scale_in) * calc_letter_h + curr_pos
+                    hole_paths.append(pts_to_svg_d(h_screen))
+
+            hole_d_combined = " ".join(hole_paths) if hole_paths else None
 
             contours.append({
                 "layer_id": layer_id,
@@ -217,54 +261,70 @@ def build() -> None:
                 "s": s,
                 "t": t,
                 "outer_d": pts_to_svg_d(screen_poly),
-                "hole_d": hole_d_str,
+                "hole_d": hole_d_combined,
             })
             layer_id += 1
 
     total_contours = len(contours)
-    log.info("Generated %d total contour layers across 5 segments", total_contours)
+    log.info("Generated %d total contour layers across %d segments", total_contours, len(pairs))
 
-    # 5. Build solid letters SVG paths
-    solid_paths: dict[str, str] = {}
-    for ch in "DESIGN":
-        pos = ANCHOR_CENTERS[ch]
-        outer_screen = centered_outers[ch] * LETTER_H + pos
-        if ch == "D":
-            inner_screen = d_inner_centered * LETTER_H + pos
-            solid_paths[ch] = pts_to_svg_d(outer_screen) + " " + pts_to_svg_d(inner_screen)
-        else:
-            solid_paths[ch] = pts_to_svg_d(outer_screen)
+    # 6. Build solid letters SVG paths for each anchor instance
+    solid_letters: list[dict[str, Any]] = []
+    for idx, (ch, pos) in enumerate(anchors):
+        outer_screen = centered_outers[ch] * calc_letter_h + pos
+        holes_screen = [h * calc_letter_h + pos for h in centered_inners[ch]]
+        has_holes = len(holes_screen) > 0
 
-    # 6. Render static poster PNG with corner graphics
-    render_static_poster(contours, solid_paths)
+        combined_d_parts = [pts_to_svg_d(outer_screen)]
+        for h_pts in holes_screen:
+            combined_d_parts.append(pts_to_svg_d(h_pts))
 
-    # 7. Generate index.html (HyperFrames composition)
-    generate_index_html(contours, solid_paths)
+        solid_letters.append({
+            "idx": idx,
+            "char": ch,
+            "pos": pos,
+            "has_holes": has_holes,
+            "d": " ".join(combined_d_parts),
+        })
 
-    # 8. Generate preview.html (interactive local preview)
-    generate_preview_html()
+    # 7. Render static poster PNG with corner graphics
+    render_static_poster(clean_text, contours, solid_letters)
 
-    log.info("✓ Full DESIGN build complete")
+    # 8. Generate index.html (HyperFrames composition)
+    generate_index_html(clean_text, contours, solid_letters, steps_per_seg, duration)
+
+    # 9. Generate preview.html (interactive local preview)
+    generate_preview_html(clean_text, duration)
+
+    # 10. Update hyperframes.json
+    hf_config = {
+        "name": "type-trail-design",
+        "width": W,
+        "height": H,
+        "fps": FPS,
+        "duration": int(duration),
+    }
+    (PROJECT_DIR / "hyperframes.json").write_text(json.dumps(hf_config, indent=2), encoding="utf-8")
+
+    log.info("✓ Build v1.1 complete for text: %s", clean_text)
 
 
 # ── Static poster generation ─────────────────────────────────────────
 
 def render_static_poster(
+    text: str,
     contours: list[dict[str, Any]],
-    solid_paths: dict[str, str],
+    solid_letters: list[dict[str, Any]],
 ) -> None:
     """Render full 1080×1440 static poster to PNG using Cairo."""
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
     ctx = cairo.Context(surface)
 
-    # Pure black background
     ctx.set_source_rgb(0, 0, 0)
     ctx.paint()
 
-    # Draw four corner graphic lines and Swiss typography
-    _draw_corner_decorations_cairo(ctx)
+    _draw_corner_decorations_cairo(ctx, text, len(contours))
 
-    # Draw blend ribbons
     ctx.set_line_width(STROKE_WIDTH)
     ctx.set_line_join(cairo.LINE_JOIN_ROUND)
 
@@ -273,41 +333,34 @@ def render_static_poster(
         if c["hole_d"]:
             _stroke_svg_path(ctx, c["hole_d"], STROKE_ALPHA)
 
-    # Draw solid white letters on top
     ctx.set_source_rgb(1, 1, 1)
-    for ch in "DESIGN":
-        path_d = solid_paths[ch]
-        if ch == "D":
+    for letter in solid_letters:
+        if letter["has_holes"]:
             ctx.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
         else:
             ctx.set_fill_rule(cairo.FILL_RULE_WINDING)
-        _fill_svg_path(ctx, path_d)
+        _fill_svg_path(ctx, letter["d"])
 
     out_file = PROJECT_DIR / "static_poster.png"
     surface.write_to_png(str(out_file))
     log.info("Saved %s", out_file)
 
 
-def _draw_corner_decorations_cairo(ctx: cairo.Context) -> None:
+def _draw_corner_decorations_cairo(ctx: cairo.Context, text: str, total_contours: int) -> None:
     """Draw graphic hairline rules, crosshairs, and typography in four corners."""
     ctx.save()
     ctx.select_font_face("Arial", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
 
-    # Hairline color and width
     ctx.set_source_rgba(1, 1, 1, 0.45)
     ctx.set_line_width(0.75)
-
     pad_x, pad_y = 56, 56
 
-    # ── Top-Left: + mark & rule lines
+    # Top-Left
     ctx.new_path()
-    # Horizontal top border segment
     ctx.move_to(pad_x, pad_y)
     ctx.line_to(pad_x + 220, pad_y)
-    # Vertical top left tick
     ctx.move_to(pad_x, pad_y)
     ctx.line_to(pad_x, pad_y + 24)
-    # Crosshair mark
     ctx.move_to(pad_x + 14, pad_y + 14)
     ctx.line_to(pad_x + 22, pad_y + 14)
     ctx.move_to(pad_x + 18, pad_y + 10)
@@ -315,16 +368,16 @@ def _draw_corner_decorations_cairo(ctx: cairo.Context) -> None:
     ctx.stroke()
 
     ctx.set_font_size(12)
-    ctx.set_source_rgba(1, 1, 1, 0.70)
+    ctx.set_source_rgba(1, 1, 1, 0.90)
     ctx.move_to(pad_x + 30, pad_y + 18)
     ctx.show_text("TYPE TRAIL // MOTION STUDY")
 
     ctx.set_source_rgba(1, 1, 1, 0.65)
     ctx.set_font_size(10)
     ctx.move_to(pad_x + 30, pad_y + 34)
-    ctx.show_text("VOL. 02 — VECTOR INTERPOLATION")
+    ctx.show_text("v1.1 — DYNAMIC GENERATOR")
 
-    # ── Top-Right: tech stats & corner bracket
+    # Top-Right
     right_x = W - pad_x
     ctx.set_source_rgba(1, 1, 1, 0.45)
     ctx.new_path()
@@ -344,7 +397,7 @@ def _draw_corner_decorations_cairo(ctx: cairo.Context) -> None:
     ctx.move_to(right_x - 170, pad_y + 34)
     ctx.show_text("ENGINE: HYPERFRAMES")
 
-    # ── Bottom-Left: glyph sequence & base rule
+    # Bottom-Left
     bot_y = H - pad_y
     ctx.set_source_rgba(1, 1, 1, 0.45)
     ctx.new_path()
@@ -352,24 +405,24 @@ def _draw_corner_decorations_cairo(ctx: cairo.Context) -> None:
     ctx.line_to(pad_x + 240, bot_y)
     ctx.move_to(pad_x, bot_y - 24)
     ctx.line_to(pad_x, bot_y)
-    # Crosshair
     ctx.move_to(pad_x + 14, bot_y - 14)
     ctx.line_to(pad_x + 22, bot_y - 14)
     ctx.move_to(pad_x + 18, bot_y - 18)
     ctx.line_to(pad_x + 18, bot_y - 10)
     ctx.stroke()
 
+    glyph_str = " — ".join(list(text))
     ctx.set_source_rgba(1, 1, 1, 0.90)
     ctx.set_font_size(12)
     ctx.move_to(pad_x + 30, bot_y - 22)
-    ctx.show_text("GLYPHS: D — E — S — I — G — N")
+    ctx.show_text(f"GLYPHS: {glyph_str}")
 
     ctx.set_source_rgba(1, 1, 1, 0.65)
     ctx.set_font_size(10)
     ctx.move_to(pad_x + 30, bot_y - 8)
     ctx.show_text("FONT: ARIAL BOLD / VECTOR")
 
-    # ── Bottom-Right: interpolation parameters
+    # Bottom-Right
     ctx.set_source_rgba(1, 1, 1, 0.45)
     ctx.new_path()
     ctx.move_to(right_x - 240, bot_y)
@@ -381,12 +434,12 @@ def _draw_corner_decorations_cairo(ctx: cairo.Context) -> None:
     ctx.set_source_rgba(1, 1, 1, 0.90)
     ctx.set_font_size(12)
     ctx.move_to(right_x - 215, bot_y - 22)
-    ctx.show_text("INTERPOLATION: 136 CONTOURS")
+    ctx.show_text(f"INTERPOLATION: {total_contours} CONTOURS")
 
     ctx.set_source_rgba(1, 1, 1, 0.65)
     ctx.set_font_size(10)
     ctx.move_to(right_x - 215, bot_y - 8)
-    ctx.show_text("5 SEGMENTS // 26 STEPS // GENUS 0-1")
+    ctx.show_text(f"{len(text) - 1} SEGMENTS // UNIVERSAL MORPH")
 
     ctx.restore()
 
@@ -441,8 +494,11 @@ def _fill_svg_path(ctx: cairo.Context, d_str: str) -> None:
 # ── HTML composition generation ──────────────────────────────────────
 
 def generate_index_html(
+    text: str,
     contours: list[dict[str, Any]],
-    solid_paths: dict[str, str],
+    solid_letters: list[dict[str, Any]],
+    steps_per_seg: int,
+    duration: float,
 ) -> None:
     """Write index.html — the HyperFrames composition."""
     blend_elements: list[str] = []
@@ -457,24 +513,26 @@ def generate_index_html(
             f'stroke-width="{STROKE_WIDTH}" stroke-linejoin="round" '
             f'style="opacity:0"/>'
         )
-
     blend_svg = "\n".join(blend_elements)
 
     solid_elements: list[str] = []
-    for ch in "DESIGN":
-        fill_rule = 'fill-rule="evenodd" ' if ch == "D" else ""
+    for item in solid_letters:
+        idx = item["idx"]
+        fill_rule = 'fill-rule="evenodd" ' if item["has_holes"] else ""
         solid_elements.append(
-            f'    <path id="solid-{ch.lower()}" d="{solid_paths[ch]}" '
+            f'    <path id="solid-{idx}" d="{item["d"]}" '
             f'fill="#ffffff" {fill_rule}style="opacity:0"/>'
         )
     solid_svg = "\n".join(solid_elements)
+
+    glyph_str = " — ".join(list(text))
 
     template = textwrap.dedent("""\
     <!doctype html>
     <html lang="en">
     <head>
     <meta charset="utf-8">
-    <title>Type Trail — DESIGN Blend</title>
+    <title>Type Trail — __TEXT__ Blend</title>
     <style>
     *{box-sizing:border-box;margin:0;padding:0}
     html,body{background:#000;overflow:hidden;font-family:Arial,Helvetica,sans-serif}
@@ -505,7 +563,7 @@ def generate_index_html(
       <line x1="56" y1="56" x2="56" y2="80" class="rule-line"/>
       <path d="M70 70H78 M74 66V74" class="rule-line"/>
       <text x="88" y="74" class="meta-text" font-size="12">TYPE TRAIL // MOTION STUDY</text>
-      <text x="88" y="90" class="meta-sub" font-size="10">VOL. 02 — VECTOR INTERPOLATION</text>
+      <text x="88" y="90" class="meta-sub" font-size="10">v1.1 — DYNAMIC GENERATOR</text>
 
       <!-- Top-Right -->
       <line x1="800" y1="56" x2="1024" y2="56" class="rule-line"/>
@@ -517,14 +575,14 @@ def generate_index_html(
       <line x1="56" y1="1384" x2="320" y2="1384" class="rule-line"/>
       <line x1="56" y1="1360" x2="56" y2="1384" class="rule-line"/>
       <path d="M70 1370H78 M74 1366V1374" class="rule-line"/>
-      <text x="88" y="1362" class="meta-text" font-size="12">GLYPHS: D — E — S — I — G — N</text>
+      <text x="88" y="1362" class="meta-text" font-size="12">GLYPHS: __GLYPH_STR__</text>
       <text x="88" y="1376" class="meta-sub" font-size="10">FONT: ARIAL BOLD / VECTOR</text>
 
       <!-- Bottom-Right -->
       <line x1="760" y1="1384" x2="1024" y2="1384" class="rule-line"/>
       <line x1="1024" y1="1360" x2="1024" y2="1384" class="rule-line"/>
-      <text x="795" y="1362" class="meta-text" font-size="12">INTERPOLATION: 136 CONTOURS</text>
-      <text x="795" y="1376" class="meta-sub" font-size="10">5 SEGMENTS // 26 STEPS // GENUS 0-1</text>
+      <text x="795" y="1362" class="meta-text" font-size="12">INTERPOLATION: __TOTAL_CONTOURS__ CONTOURS</text>
+      <text x="795" y="1376" class="meta-sub" font-size="10">__NUM_SEGS__ SEGMENTS // UNIVERSAL MORPH</text>
     </svg>
 
     <!-- Blend contour layer -->
@@ -543,46 +601,30 @@ def generate_index_html(
     <script>
     (function() {
       const TOTAL_CONTOURS = __TOTAL_CONTOURS__;
+      const NUM_LETTERS = __NUM_LETTERS__;
       const tl = gsap.timeline({ paused: true });
 
-      // Corner decorations fade in
       tl.fromTo("#decor-svg", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.5, ease: "power2.out" }, 0.0);
+      tl.fromTo("#solid-0", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.35, ease: "power2.out" }, 0.05);
 
-      // Phase 0: Solid D appears
-      tl.fromTo("#solid-d", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.35, ease: "power2.out" }, 0.05);
-
-      // Cascading reveal timings for the 5 segments
-      // Seg 1 (D -> E): layers 0..26 from 0.4s to 1.3s
-      // Solid E: appears at 1.3s
-      // Seg 2 (E -> S): layers 27..53 from 1.3s to 2.2s
-      // Solid S: appears at 2.2s
-      // Seg 3 (S -> I): layers 54..80 from 2.2s to 3.1s
-      // Solid I: appears at 3.1s
-      // Seg 4 (I -> G): layers 81..107 from 3.1s to 4.0s
-      // Solid G: appears at 4.0s
-      // Seg 5 (G -> N): layers 108..134 from 4.0s to 4.9s
-      // Solid N: appears at 4.9s
-
-      const segStartTimes = [0.4, 1.3, 2.2, 3.1, 4.0];
-      const segDurations  = [0.9, 0.9, 0.9, 0.9, 0.9];
+      const revealStart = 0.4;
+      const revealEnd = __DURATION__ * 0.82;
+      const totalRevealTime = revealEnd - revealStart;
+      const numSegs = NUM_LETTERS - 1;
+      const segDur = totalRevealTime / numSegs;
       const stepsPerSeg = __STEPS_PER_SEG__;
 
       for (let i = 0; i < TOTAL_CONTOURS; i++) {
-        const segIdx = Math.min(Math.floor(i / stepsPerSeg), 4);
+        const segIdx = Math.min(Math.floor(i / stepsPerSeg), numSegs - 1);
         const stepInSeg = i - segIdx * stepsPerSeg;
-        const segStart = segStartTimes[segIdx];
-        const segDur = segDurations[segIdx];
-        const t = segStart + (segDur * stepInSeg) / stepsPerSeg;
+        const t = revealStart + (segIdx * segDur) + (segDur * stepInSeg) / stepsPerSeg;
         tl.set("#blend-" + i, { autoAlpha: 1 }, t);
       }
 
-      tl.fromTo("#solid-e", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25, ease: "power2.out" }, 1.3);
-      tl.fromTo("#solid-s", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25, ease: "power2.out" }, 2.2);
-      tl.fromTo("#solid-i", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25, ease: "power2.out" }, 3.1);
-      tl.fromTo("#solid-g", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25, ease: "power2.out" }, 4.0);
-      tl.fromTo("#solid-n", { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25, ease: "power2.out" }, 4.9);
-
-      // 4.9s – 6.0s: hold complete state
+      for (let l = 1; l < NUM_LETTERS; l++) {
+        const appearTime = revealStart + l * segDur;
+        tl.fromTo("#solid-" + l, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.25, ease: "power2.out" }, appearTime);
+      }
 
       window.__timelines = window.__timelines || {};
       window.__timelines["type-trail-design"] = tl;
@@ -593,11 +635,15 @@ def generate_index_html(
     """)
 
     html = (
-        template.replace("__W__", str(W))
+        template.replace("__TEXT__", text)
+        .replace("__GLYPH_STR__", glyph_str)
+        .replace("__W__", str(W))
         .replace("__H__", str(H))
-        .replace("__DURATION__", str(int(DURATION)))
+        .replace("__DURATION__", str(int(duration)))
         .replace("__TOTAL_CONTOURS__", str(len(contours)))
-        .replace("__STEPS_PER_SEG__", str(STEPS_PER_SEG))
+        .replace("__NUM_LETTERS__", str(len(solid_letters)))
+        .replace("__NUM_SEGS__", str(len(solid_letters) - 1))
+        .replace("__STEPS_PER_SEG__", str(steps_per_seg))
         .replace("__BLEND_SVG__", blend_svg)
         .replace("__SOLID_SVG__", solid_svg)
     )
@@ -607,14 +653,14 @@ def generate_index_html(
     log.info("Saved %s", out)
 
 
-def generate_preview_html() -> None:
+def generate_preview_html(text: str, duration: float) -> None:
     """Write standalone interactive browser preview page."""
     template = textwrap.dedent("""\
     <!doctype html>
     <html lang="en">
     <head>
     <meta charset="utf-8">
-    <title>Type Trail DESIGN — Preview</title>
+    <title>Type Trail __TEXT__ — Preview v1.1</title>
     <style>
     *{margin:0;padding:0;box-sizing:border-box}
     html,body{background:#111;display:flex;flex-direction:column;align-items:center;
@@ -631,7 +677,7 @@ def generate_preview_html() -> None:
     </style>
     </head>
     <body>
-    <h1>Type Trail DESIGN — Blend Poster</h1>
+    <h1>Type Trail __TEXT__ — Blend Poster (v1.1)</h1>
     <div class="wrap">
       <iframe id="comp" src="index.html"></iframe>
     </div>
@@ -705,12 +751,13 @@ def generate_preview_html() -> None:
     """)
 
     html = (
-        template.replace("__PREV_W__", str(W // 2))
+        template.replace("__TEXT__", text)
+        .replace("__PREV_W__", str(W // 2))
         .replace("__PREV_H__", str(H // 2))
         .replace("__W__", str(W))
         .replace("__H__", str(H))
-        .replace("__DURATION__", str(int(DURATION)))
-        .replace("__DURATION_FLOAT__", f"{DURATION:.1f}")
+        .replace("__DURATION__", str(int(duration)))
+        .replace("__DURATION_FLOAT__", f"{duration:.1f}")
     )
 
     out = PROJECT_DIR / "preview.html"
@@ -718,7 +765,43 @@ def generate_preview_html() -> None:
     log.info("Saved %s", out)
 
 
-# ── Entry point ──────────────────────────────────────────────────────
+# ── Entry point (CLI) ────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Type Trail Blend Poster Generator — v1.1")
+    parser.add_argument(
+        "--text",
+        type=str,
+        default="DESIGN",
+        help="Text/word to generate blend poster for (default: DESIGN)",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=26,
+        help="Intermediate blend steps per segment (default: 26)",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=6.0,
+        help="Animation duration in seconds (default: 6.0)",
+    )
+    parser.add_argument(
+        "--height",
+        type=float,
+        default=None,
+        help="Cap height in pixels (default: adaptive based on word length)",
+    )
+
+    args = parser.parse_args()
+    build(
+        text=args.text,
+        steps_per_seg=args.steps,
+        duration=args.duration,
+        letter_h=args.height,
+    )
+
 
 if __name__ == "__main__":
-    build()
+    main()

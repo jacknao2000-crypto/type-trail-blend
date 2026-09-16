@@ -78,19 +78,36 @@ All 131 contour paths are pre-computed into static SVG paths inside `index.html`
 
 ---
 
-## Quick Start & Regeneration
+### Quick Start & Regeneration (v1.1)
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/jacknao2000-crypto/type-trail-blend.git
 cd type-trail-blend
 
-# 2. Re-run geometry generation & static poster render
+# 2. Generate the default "DESIGN" flagship poster
 python build_composition.py
 
-# 3. Preview locally
-# Open preview.html directly in any modern browser!
+# 3. (NEW in v1.1) Generate blend posters for ANY custom word:
+python build_composition.py --text "FUTURE"
+python build_composition.py --text "MOTION" --steps 30 --duration 7.0
+python build_composition.py --text "CREATIVE"
+
+# 4. Render high-res MP4 video via HyperFrames CLI:
+npx hyperframes render --quality high --output my_custom_poster.mp4
+
+# 5. Preview locally:
+# Open preview.html directly in any browser!
 ```
+
+---
+
+## What's New in v1.1
+
+- **Arbitrary Text Support (`--text`)**: Feed any English word (e.g. `FUTURE`, `MOTION`, `ART`) directly via CLI.
+- **Adaptive Serpentine Layout**: Dynamically computes optimal zigzag coordinates based on character count.
+- **Universal Multi-hole Morphing**: Automatically detects glyph counters (A, B, D, O, P, Q, R, 0, 8, etc.) and smoothly interpolates topological inner boundaries without self-intersection.
+- **Dynamic Corner Metadata**: Four-corner Swiss editorial metadata automatically reflects the active text and contour count.
 
 ---
 
